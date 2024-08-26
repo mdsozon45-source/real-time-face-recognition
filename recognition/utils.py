@@ -1,62 +1,101 @@
-import face_recognition
 import cv2
 import pickle
 from .models import RecognizedFace, UserProfile
 from django.core.files.base import ContentFile
 from io import BytesIO
 from PIL import Image
+import os
+import logging
+import face_recognition
+logging.basicConfig(level=logging.DEBUG)
+import numpy as np
+import io
+import dlib
+import tempfile
 
-def recognize_and_save_face(known_faces, face_image, user=None):
-    image = face_recognition.load_image_file(face_image)
-    unknown_encodings = face_recognition.face_encodings(image)
+def recognize_and_save_face(known_faces, known_names, image_file):
+    # Read the image file into a PIL Image
+    pil_image = Image.open(image_file)
 
-    if len(unknown_encodings) == 0:
-        return None
+    # Convert PIL Image to NumPy array
+    image_array = np.array(pil_image)
 
-    results = []
-    for known_face in known_faces:
-        match = face_recognition.compare_faces([known_face['encoding']], unknown_encodings[0])
-        if match[0]:
-            results.append(known_face['name'])
-            recognized_user = UserProfile.objects.get(user__username=known_face['name']).user
-            
-            # Save the recognized face
-            recognized_face = RecognizedFace(user=recognized_user)
-            recognized_face.image.save(face_image.name, face_image)
-            recognized_face.save()
-            break
-    return results
+    # Initialize the dlib face detector
+    detector = dlib.get_frontal_face_detector()
 
-def process_and_save_video(known_faces, video_file_path, user=None):
-    video_capture = cv2.VideoCapture(video_file_path)
+    # Detect faces in the image
+    detected_faces = detector(image_array, 1)  # 1 is the upsample_num_times parameter
+
+    # Extract face encodings
+    encodings = []
+    for face in detected_faces:
+        # Extract face region
+        face_image = image_array[face.top():face.bottom(), face.left():face.right()]
+        # Convert face region to PIL Image for face_recognition library
+        face_pil_image = Image.fromarray(face_image)
+        # Get encoding using face_recognition library
+        encoding = face_recognition.face_encodings(np.array(face_pil_image))
+        if encoding:
+            encodings.append(encoding[0])
+
+    # Recognize faces
+    recognized_names = []
+    for encoding in encodings:
+        # Compare faces
+        matches = face_recognition.compare_faces(known_faces, encoding)
+
+        # Check if any face matches
+        if np.any(matches):  # Use np.any() to handle the array properly
+            first_match_index = np.where(matches)[0][0]  # Get the index of the first match
+            recognized_names.append(known_names[first_match_index])
+
+    return recognized_names
+
+
+
+
+
+
+
+def process_and_save_video(known_faces, known_names, video_file):
+    # Check if the video_file has a method for temporary file path or save it to a temp file
+    if hasattr(video_file, 'temporary_file_path'):
+        video_path = video_file.temporary_file_path()
+    else:
+        # Save the file to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
+            for chunk in video_file.chunks():
+                temp_file.write(chunk)
+            video_path = temp_file.name
+
+    # Initialize OpenCV VideoCapture
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return {'error': 'Could not open video file.'}
+
     recognized_faces = []
 
     while True:
-        ret, frame = video_capture.read()
+        ret, frame = cap.read()
         if not ret:
             break
 
-        rgb_frame = frame[:, :, ::-1]
+        # Convert frame to RGB (face_recognition expects RGB format)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Find face locations and encodings in the frame
         face_locations = face_recognition.face_locations(rgb_frame)
         face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-        for face_encoding in face_encodings:
-            matches = face_recognition.compare_faces([face['encoding'] for face in known_faces], face_encoding)
-            name = "Unknown"
+        for encoding in face_encodings:
+            matches = face_recognition.compare_faces(known_faces, encoding)
+            if np.any(matches):  # Use np.any() to handle the array properly
+                first_match_index = np.where(matches)[0][0]
+                recognized_faces.append(known_names[first_match_index])
 
-            if True in matches:
-                first_match_index = matches.index(True)
-                name = known_faces[first_match_index]['name']
-                recognized_user = UserProfile.objects.get(user__username=name).user
-                
-                # Save recognized face
-                recognized_face = RecognizedFace(user=recognized_user)
-                recognized_face.video.save(video_file_path, ContentFile(open(video_file_path, 'rb').read()))
-                recognized_face.save()
+    cap.release()
+    os.remove(video_path)  # Clean up the temporary file
 
-            recognized_faces.append(name)
-
-    video_capture.release()
     return recognized_faces
 
 
@@ -65,12 +104,17 @@ def save_encodings(encodings, names):
     with open('encodings.pkl', 'wb') as f:
         pickle.dump({'encodings': encodings, 'names': names}, f)
 
+
+
 def load_encodings():
+    if not os.path.exists('encodings.pkl'):
+        raise FileNotFoundError("The 'encodings.pkl' file was not found. Please ensure it exists or generate it.")
+    
     with open('encodings.pkl', 'rb') as f:
-        return pickle.load(f)
+        known_faces, known_names = pickle.load(f)
+    return known_faces, known_names
 
-
-def extract_face_encodings(image_file):
+def extract_face_encodings_user_create(image_file):
     try:
         image = face_recognition.load_image_file(image_file)
         face_locations = face_recognition.face_locations(image)
@@ -81,3 +125,28 @@ def extract_face_encodings(image_file):
     except Exception as e:
         print(f"Error extracting face encodings: {e}")
         return None
+
+
+def extract_face_encodings(image_file):
+    try:
+        # Open image file with PIL
+        pil_image = Image.open(image_file)
+
+        # Convert image to RGB if it's not already
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+
+        # Convert PIL image to numpy array
+        image_array = np.array(pil_image)
+
+        # Use face_recognition to get face encodings
+        face_locations = face_recognition.face_locations(image_array)
+        face_encodings = face_recognition.face_encodings(image_array, face_locations)
+        
+        # Return the first encoding found (if any)
+        if face_encodings:
+            return face_encodings[0]
+        else:
+            return None
+    except Exception as e:
+        raise ValueError(f"Error processing image: {str(e)}")

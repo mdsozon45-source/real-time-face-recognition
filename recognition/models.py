@@ -14,7 +14,7 @@ class UserProfile(AbstractUser):
 class RecognizedFace(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
-    image = models.ImageField(upload_to='recognized_faces/')
+    image = models.ImageField(upload_to='recognized_faces/', null=True, blank=True)
     video = models.FileField(upload_to='recognized_videos/', null=True, blank=True)
 
     def __str__(self):

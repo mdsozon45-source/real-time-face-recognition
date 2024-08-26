@@ -8,7 +8,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = ['username', 'email', 'first_name', 'last_name', 'password', 'image', 'encoding']
         extra_kwargs = {
-            'password': {'write_only': True},  # Password should not be readable
+            'password': {'write_only': True},
         }
 
     def create(self, validated_data):
@@ -23,7 +23,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             encoding=validated_data.get('encoding', None)
         )
         return user_profile
-        
+
 class FaceRecognitionInputSerializer(serializers.Serializer):
     image = serializers.ImageField(required=False)
     video = serializers.FileField(required=False)
